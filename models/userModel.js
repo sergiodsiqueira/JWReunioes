@@ -4,159 +4,152 @@ const saltRounds = 10;
 
 class UserModel {
   // Obter todos os usuários
-  static findAll(callback) {
-    const sql = 'SELECT id, email, nome, created_at FROM users';
-    
-    db.all(sql, [], (err, rows) => {
-      if (err) {
-        return callback(err, null);
-      }
-      callback(null, rows);
-    });
+  static async findAll() {
+    try {
+      const result = await db.query(
+        'SELECT id, email, nome, created_at FROM users'
+      );
+      return result.rows;
+    } catch (err) {
+      throw err;
+    }
   }
 
   // Obter um usuário pelo ID
-  static findById(id, callback) {
-    const sql = 'SELECT id, email, nome, created_at FROM users WHERE id = ?';
-    
-    db.get(sql, [id], (err, row) => {
-      if (err) {
-        return callback(err, null);
-      }
-      callback(null, row);
-    });
+  static async findById(id) {
+    try {
+      const result = await db.query(
+        'SELECT id, email, nome, created_at FROM users WHERE id = $1',
+        [id]
+      );
+      return result.rows[0];
+    } catch (err) {
+      throw err;
+    }
   }
 
   // Encontrar usuário pelo email (incluindo a senha para autenticação)
-  static findByEmail(email, callback) {
-    const sql = 'SELECT * FROM users WHERE email = ?';
-    
-    db.get(sql, [email], (err, row) => {
-      if (err) {
-        return callback(err, null);
-      }
-      callback(null, row);
-    });
+  static async findByEmail(email) {
+    try {
+      const result = await db.query(
+        'SELECT * FROM users WHERE email = $1',
+        [email]
+      );
+      return result.rows[0];
+    } catch (err) {
+      throw err;
+    }
   }
 
   // Criar um novo usuário com senha hash
-  static create(userData, callback) {
+  static async create(userData) {
     const { email, nome, senha } = userData;
     
-    // Hash da senha antes de salvar
-    bcrypt.hash(senha, saltRounds, (err, hash) => {
-      if (err) {
-        return callback(err, null);
-      }
+    try {
+      // Hash da senha
+      const hash = await bcrypt.hash(senha, saltRounds);
       
-      const sql = 'INSERT INTO users (email, nome, senha) VALUES (?, ?, ?)';
+      const result = await db.query(
+        'INSERT INTO users (email, nome, senha) VALUES ($1, $2, $3) RETURNING id, email, nome',
+        [email, nome, hash]
+      );
       
-      db.run(sql, [email, nome, hash], function(err) {
-        if (err) {
-          return callback(err, null);
-        }
-        
-        callback(null, {
-          id: this.lastID,
-          email,
-          nome
-        });
-      });
-    });
+      return result.rows[0];
+    } catch (err) {
+      throw err;
+    }
   }
 
   // Verificar credenciais para login
-  static verifyCredentials(email, senha, callback) {
-    this.findByEmail(email, (err, user) => {
-      if (err) {
-        return callback(err, null);
-      }
+  static async verifyCredentials(email, senha) {
+    try {
+      const user = await this.findByEmail(email);
       
       if (!user) {
-        return callback(null, false);
+        return false;
       }
       
-      // Verificar se a senha corresponde ao hash armazenado
-      bcrypt.compare(senha, user.senha, (err, result) => {
-        if (err) {
-          return callback(err, null);
-        }
-        
-        if (result) {
-          // Credenciais válidas
-          const userWithoutPassword = {
-            id: user.id,
-            email: user.email,
-            nome: user.nome
-          };
-          callback(null, userWithoutPassword);
-        } else {
-          // Senha incorreta
-          callback(null, false);
-        }
-      });
-    });
+      // Verificar senha
+      const match = await bcrypt.compare(senha, user.senha);
+      
+      if (match) {
+        // Credenciais válidas - retornar usuário sem a senha
+        return {
+          id: user.id,
+          email: user.email,
+          nome: user.nome,
+          created_at: user.created_at
+        };
+      } else {
+        // Senha incorreta
+        return false;
+      }
+    } catch (err) {
+      throw err;
+    }
   }
 
   // Atualizar um usuário
-  static update(id, userData, callback) {
-    const { email, nome, senha } = userData;
-    
-    // Verificar se a senha foi fornecida para atualização
-    if (senha) {
-      // Hash da nova senha
-      bcrypt.hash(senha, saltRounds, (err, hash) => {
-        if (err) {
-          return callback(err, null);
-        }
-        
-        const sql = 'UPDATE users SET email = ?, nome = ?, senha = ? WHERE id = ?';
-        
-        db.run(sql, [email, nome, hash, id], function(err) {
-          if (err) {
-            return callback(err, null);
+  static async update(id, userData) {
+    try {
+      const { email, nome, senha } = userData;
+      
+      // Verificar se a senha foi fornecida
+      if (senha) {
+        // Usar uma transação para garantir consistência
+        return await db.transaction(async (client) => {
+          // Hash da nova senha
+          const hash = await bcrypt.hash(senha, saltRounds);
+          
+          const result = await client.query(
+            'UPDATE users SET email = $1, nome = $2, senha = $3 WHERE id = $4 RETURNING id, email, nome',
+            [email, nome, hash, id]
+          );
+          
+          if (result.rows.length === 0) {
+            return { changes: 0 };
           }
           
-          callback(null, {
-            changes: this.changes,
-            id,
-            email,
-            nome
-          });
+          return {
+            ...result.rows[0],
+            changes: result.rowCount
+          };
         });
-      });
-    } else {
-      // Atualizar apenas email e nome
-      const sql = 'UPDATE users SET email = ?, nome = ? WHERE id = ?';
-      
-      db.run(sql, [email, nome, id], function(err) {
-        if (err) {
-          return callback(err, null);
+      } else {
+        // Apenas atualizar email e nome
+        const result = await db.query(
+          'UPDATE users SET email = $1, nome = $2 WHERE id = $3 RETURNING id, email, nome',
+          [email, nome, id]
+        );
+        
+        if (result.rows.length === 0) {
+          return { changes: 0 };
         }
         
-        callback(null, {
-          changes: this.changes,
-          id,
-          email,
-          nome
-        });
-      });
+        return {
+          ...result.rows[0],
+          changes: result.rowCount
+        };
+      }
+    } catch (err) {
+      throw err;
     }
   }
 
   // Remover um usuário
-  static delete(id, callback) {
-    const sql = 'DELETE FROM users WHERE id = ?';
-    
-    db.run(sql, [id], function(err) {
-      if (err) {
-        return callback(err, null);
-      }
+  static async delete(id) {
+    try {
+      const result = await db.query(
+        'DELETE FROM users WHERE id = $1',
+        [id]
+      );
       
-      callback(null, {
-        changes: this.changes
-      });
-    });
+      return {
+        changes: result.rowCount
+      };
+    } catch (err) {
+      throw err;
+    }
   }
 }
 
